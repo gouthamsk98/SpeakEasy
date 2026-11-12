@@ -14,8 +14,8 @@ use std::{
     about = "Speech recognition for glossectomy speech — headless tools"
 )]
 struct Cli {
-    /// Model directory (model.onnx + model.json) or "dummy"
-    #[arg(long, short, default_value = "dummy", global = true)]
+    /// Model directory (model.onnx + model.json), "auto" (first in models/) or "dummy"
+    #[arg(long, short, default_value = "auto", global = true)]
     model: String,
     /// auto | cpu | cuda | tensorrt | directml
     #[arg(long, short, default_value = "auto", global = true)]

@@ -14,6 +14,17 @@
 use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 use std::sync::Arc;
 
+/// Mel filterbank flavour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MelScale {
+    /// Kaldi/HTK: triangles linear on the HTK mel scale, unnormalised. Our own models use this.
+    #[default]
+    Htk,
+    /// librosa/Slaney: Slaney mel scale, triangles linear in Hz, area-normalised.
+    /// NVIDIA NeMo models (e.g. streaming FastConformer) are trained with this.
+    Slaney,
+}
+
 /// Feature configuration. Must match `research/configs/*.yaml` → stored in model metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FbankConfig {
@@ -29,6 +40,7 @@ pub struct FbankConfig {
     pub preemphasis: f32,
     pub remove_dc: bool,
     pub log_floor: f32,
+    pub mel_scale: MelScale,
 }
 
 impl Default for FbankConfig {
@@ -44,6 +56,7 @@ impl Default for FbankConfig {
             preemphasis: 0.97,
             remove_dc: true,
             log_floor: 1e-10,
+            mel_scale: MelScale::Htk,
         }
     }
 }
@@ -62,7 +75,63 @@ struct MelFilter {
     weights: Vec<f32>,
 }
 
+fn slaney_hz_to_mel(hz: f32) -> f32 {
+    let (f_sp, min_log_hz) = (200.0 / 3.0, 1000.0);
+    let logstep = 6.4f32.ln() / 27.0;
+    if hz < min_log_hz {
+        hz / f_sp
+    } else {
+        min_log_hz / f_sp + (hz / min_log_hz).ln() / logstep
+    }
+}
+fn slaney_mel_to_hz(mel: f32) -> f32 {
+    let (f_sp, min_log_hz) = (200.0 / 3.0, 1000.0);
+    let min_log_mel = min_log_hz / f_sp;
+    let logstep = 6.4f32.ln() / 27.0;
+    if mel < min_log_mel {
+        mel * f_sp
+    } else {
+        min_log_hz * (logstep * (mel - min_log_mel)).exp()
+    }
+}
+
+/// librosa.filters.mel(norm="slaney", htk=False) — matches kaldi-native-fbank `is_librosa`.
+fn build_slaney_bank(cfg: &FbankConfig) -> Vec<MelFilter> {
+    let n_bins = cfg.n_fft / 2 + 1;
+    let bin_hz = cfg.sample_rate as f32 / cfg.n_fft as f32;
+    let (mlo, mhi) = (slaney_hz_to_mel(cfg.f_min), slaney_hz_to_mel(cfg.f_max));
+    let hz: Vec<f32> = (0..cfg.n_mels + 2)
+        .map(|i| slaney_mel_to_hz(mlo + (mhi - mlo) * i as f32 / (cfg.n_mels + 1) as f32))
+        .collect();
+    (0..cfg.n_mels)
+        .map(|m| {
+            let (l, c, r) = (hz[m], hz[m + 1], hz[m + 2]);
+            let enorm = 2.0 / (r - l);
+            let mut start = usize::MAX;
+            let mut weights = Vec::new();
+            for b in 0..n_bins {
+                let f = b as f32 * bin_hz;
+                let w = ((f - l) / (c - l)).min((r - f) / (r - c)).max(0.0) * enorm;
+                if w > 0.0 {
+                    if start == usize::MAX {
+                        start = b;
+                    }
+                    weights.resize(b - start, 0.0);
+                    weights.push(w);
+                }
+            }
+            MelFilter {
+                start: start.min(n_bins),
+                weights,
+            }
+        })
+        .collect()
+}
+
 fn build_mel_bank(cfg: &FbankConfig) -> Vec<MelFilter> {
+    if cfg.mel_scale == MelScale::Slaney {
+        return build_slaney_bank(cfg);
+    }
     let n_bins = cfg.n_fft / 2 + 1;
     let bin_hz = cfg.sample_rate as f32 / cfg.n_fft as f32;
     let (mlo, mhi) = (hz_to_mel(cfg.f_min), hz_to_mel(cfg.f_max));
@@ -253,6 +322,22 @@ mod tests {
         for (a, b) in batch.iter().zip(&out) {
             assert!((a - b).abs() < 1e-4, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn slaney_scale_roundtrip_and_bank() {
+        for hz in [0.0, 500.0, 1000.0, 4000.0, 8000.0] {
+            assert!((slaney_mel_to_hz(slaney_hz_to_mel(hz)) - hz).abs() < 0.05);
+        }
+        let cfg = FbankConfig {
+            mel_scale: MelScale::Slaney,
+            f_min: 0.0,
+            f_max: 8000.0,
+            ..FbankConfig::default()
+        };
+        let bank = build_mel_bank(&cfg);
+        assert_eq!(bank.len(), 80);
+        assert!(bank.iter().all(|f| !f.weights.is_empty()));
     }
 
     #[test]

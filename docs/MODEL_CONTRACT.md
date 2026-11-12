@@ -43,6 +43,30 @@ models/<name>/
 - Vocab decoding: `<space>` or `" "` becomes a space; a token starting with `▁`
   (SentencePiece) starts a new word; anything else is appended as is.
 
+## Optional fields (third-party models)
+
+Models we did not export ourselves can be described without changing them:
+
+```json
+{
+  "chunk_shift": 16,                 // advance per call; < chunk_frames = overlapping windows
+  "blank_id": 1024,
+  "feature": { "...": "...", "mel_scale": "slaney", "log_floor": 1.1920929e-07 },
+  "io": {
+    "features": "audio_signal",
+    "layout": "mel_major",           // [1, n_mels, T] instead of [1, T, n_mels]
+    "length": "length",              // int64 [1] input = frames in the window
+    "log_probs": "logprobs",
+    "states": [                      // explicit pairs; f32 or int64; shape needed if dynamic
+      {"input": "cache_last_channel", "output": "cache_last_channel_next", "shape": [1, 17, 70, 512]},
+      {"input": "cache_last_channel_len", "output": "cache_last_channel_next_len", "shape": [1]}
+    ]
+  }
+}
+```
+
+`asr-import-nemo <dir>` (research/) writes this for sherpa-onnx NeMo streaming CTC exports.
+
 ## Future versions
 
 - v2: transducer (encoder / decoder / joiner graphs) for RNN-T models.

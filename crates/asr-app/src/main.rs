@@ -154,15 +154,16 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let mut args = std::env::args().skip(1);
-    let model = args.next().unwrap_or_else(|| "dummy".into());
-    let device: Device = args
-        .next()
-        .as_deref()
-        .unwrap_or("auto")
-        .parse()
-        .unwrap_or_default();
-
+    // Usage: speak-easy [MODEL_DIR|auto|dummy] [auto|cpu|cuda|tensorrt|directml]
+    //        speak-easy cuda          (device only; model = first installed)
+    let mut model = "auto".to_string();
+    let mut device = Device::Auto;
+    for a in std::env::args().skip(1) {
+        match a.parse::<Device>() {
+            Ok(d) => device = d,
+            Err(_) => model = a,
+        }
+    }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 500.0])

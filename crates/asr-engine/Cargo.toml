@@ -10,7 +10,7 @@ default = []
 # ONNX Runtime backend (downloads prebuilt ORT at build time).
 onnx = ["dep:ort", "dep:serde", "dep:serde_json"]
 # GPU execution providers. Linux/Windows NVIDIA:
-cuda = ["onnx", "ort/cuda"]
+cuda = ["onnx", "ort/cuda", "dep:libloading"]
 tensorrt = ["onnx", "ort/tensorrt", "cuda"]
 # Windows, any DX12 GPU (NVIDIA / AMD / Intel):
 directml = ["onnx", "ort/directml"]
@@ -22,3 +22,4 @@ log.workspace = true
 ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "api-24"] }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+libloading = { version = "0.8", optional = true }

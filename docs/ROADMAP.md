@@ -7,6 +7,11 @@
 - [x] Python: manifests with consent IDs, streaming CTC baseline, training, streaming eval, verified export
 - [x] PyO3 bindings so training uses the Rust features
 
+## Phase 0.5: real-time demo on normal speech ✅
+- [x] Pretrained NeMo streaming FastConformer CTC runs in our runtime (CUDA + CPU)
+- [x] Contract extended: overlapping windows, mel-major layout, int64 states, Slaney mel
+- [x] Live mic → GPU → GUI path verified
+
 ## Phase 1: data (the real bottleneck)
 - [ ] Consent process and forms with a clinical partner (see DATA_ETHICS.md)
 - [ ] **In-app enrollment recorder:** shows a prompt sentence, records, saves wav + txt + consent ID
@@ -30,7 +35,9 @@
 ## Phase 3: latency
 - [ ] True end-to-end latency rig (loopback timing)
 - [ ] Smaller chunks (40 ms) with limited lookahead; measure the WER/latency trade-off curve
-- [ ] ORT IoBinding: state stays on the GPU between chunks
+- [ ] ORT IoBinding: state stays on the GPU between chunks (FastConformer copies ~2.5 MB/call)
+- [ ] CUDA graphs for the FastConformer step (10 ms now; profile first)
+- [ ] Our fbank uses `snip_edges=true`; Kaldi/NeMo use `false` (a half-frame offset). Measure the WER impact
 - [ ] TensorRT FP16 / INT8 engines and CUDA graphs
 - [ ] Wake the engine with a condvar instead of a 2 ms sleep
 - [ ] Polyphase resampler (measure the WER impact first)

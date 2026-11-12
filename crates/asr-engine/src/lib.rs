@@ -27,8 +27,13 @@ use std::time::{Duration, Instant};
 pub trait Recognizer: Send {
     fn name(&self) -> String;
     fn feature_config(&self) -> FbankConfig;
-    /// Frames per inference call. Smaller = lower latency, more overhead per frame.
+    /// Frames per inference call (window). Smaller = lower latency, more overhead per frame.
     fn chunk_frames(&self) -> usize;
+    /// Frames to advance after each call. `< chunk_frames` means overlapping windows
+    /// (models that need a little right/left context per call, e.g. NeMo FastConformer).
+    fn chunk_shift(&self) -> usize {
+        self.chunk_frames()
+    }
     fn accept_chunk(&mut self, feats: &[f32]) -> Result<Option<String>>;
     /// End of utterance: flush and return the final text. Must leave the
     /// recognizer ready for a new utterance.
@@ -84,6 +89,7 @@ pub struct Pipeline {
     feats: Vec<f32>,
     n_mels: usize,
     chunk: usize,
+    shift: usize,
     in_utterance: bool,
     pub metrics: Metrics,
 }
@@ -92,6 +98,11 @@ impl Pipeline {
     pub fn new(rec: Box<dyn Recognizer>, ep: EndpointConfig) -> Self {
         let fcfg = rec.feature_config();
         let chunk = rec.chunk_frames();
+        let shift = rec.chunk_shift();
+        assert!(
+            shift > 0 && shift <= chunk,
+            "chunk_shift must be in 1..=chunk_frames"
+        );
         let hop = fcfg.frame_shift as f64 / fcfg.sample_rate as f64;
         Self {
             n_mels: fcfg.n_mels,
@@ -99,9 +110,10 @@ impl Pipeline {
             endpointer: Endpointer::new(ep, hop),
             feats: Vec::with_capacity(chunk * 80 * 4),
             chunk,
+            shift,
             in_utterance: false,
             metrics: Metrics {
-                chunk_audio: Duration::from_secs_f64(hop * chunk as f64),
+                chunk_audio: Duration::from_secs_f64(hop * shift as f64),
                 ..Default::default()
             },
             rec,
@@ -126,10 +138,11 @@ impl Pipeline {
             }
         }
 
-        let step = self.chunk * self.n_mels;
-        while self.feats.len() >= step {
+        let window = self.chunk * self.n_mels;
+        let step = self.shift * self.n_mels;
+        while self.feats.len() >= window {
             let t0 = Instant::now();
-            let out = self.rec.accept_chunk(&self.feats[..step])?;
+            let out = self.rec.accept_chunk(&self.feats[..window])?;
             self.metrics.record(t0.elapsed());
             self.feats.drain(..step);
             if let Some(text) = out {
@@ -147,8 +160,21 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Force end of utterance (e.g. push-to-talk released).
+    /// Force end of utterance (end of file, push-to-talk released). Pads the tail with
+    /// silence so the last partial window is still decoded rather than dropped.
     pub fn flush(&mut self, events: &mut Vec<Event>) -> Result<()> {
+        if !self.feats.is_empty() {
+            let cfg = self.fbank.config().clone();
+            let pad = vec![0.0f32; self.chunk * cfg.frame_shift + cfg.frame_length];
+            self.fbank.push(&pad, &mut self.feats);
+            let (window, step) = (self.chunk * self.n_mels, self.shift * self.n_mels);
+            while self.feats.len() >= window {
+                if let Some(text) = self.rec.accept_chunk(&self.feats[..window])? {
+                    events.push(Event::Partial(text));
+                }
+                self.feats.drain(..step);
+            }
+        }
         let text = self.rec.finalize()?;
         if !text.trim().is_empty() {
             events.push(Event::Final(text));
@@ -186,21 +212,81 @@ impl std::str::FromStr for Device {
     }
 }
 
-/// Load a recognizer: a model directory (ONNX) or `"dummy"`.
+/// Resolve a project-relative path (e.g. `models/x`, `third_party/...`) so the binaries
+/// work no matter which directory they are launched from: tries the path as given, then
+/// relative to the executable's directory and each of its ancestors
+/// (covers `target/release/<bin>` inside the repo and an installed `bin/../models` layout).
+pub fn resolve_path(p: impl AsRef<std::path::Path>) -> Option<std::path::PathBuf> {
+    let p = p.as_ref();
+    if p.exists() {
+        return Some(p.to_path_buf());
+    }
+    if p.is_absolute() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(p))
+        .find(|c| c.exists())
+}
+
+/// Installed models: directories under `models/` that contain a `model.json`.
+pub fn list_models() -> Vec<std::path::PathBuf> {
+    let Some(root) = resolve_path("models") else {
+        return Vec::new();
+    };
+    let mut v: Vec<_> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("model.json").is_file())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Load a recognizer: a model directory (ONNX), `"auto"` (first installed model, else
+/// dummy) or `"dummy"`.
 pub fn load_recognizer(model: &str, device: Device) -> Result<Box<dyn Recognizer>> {
+    let model = if model == "auto" {
+        match list_models().into_iter().next() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                log::warn!("no models installed (scripts/fetch-demo-model.sh); using dummy");
+                "dummy".into()
+            }
+        }
+    } else {
+        model.to_string()
+    };
     if model == "dummy" {
         return Ok(Box::new(dummy::DummyRecognizer::default()));
     }
+    let dir = resolve_path(&model).filter(|d| d.join("model.json").is_file());
+    let Some(dir) = dir else {
+        let avail: Vec<String> = list_models()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        anyhow::bail!(
+            "{model:?} is not a model directory (needs model.json). Installed models: {}",
+            if avail.is_empty() {
+                "none — run scripts/fetch-demo-model.sh".into()
+            } else {
+                avail.join(", ")
+            }
+        );
+    };
+    log::info!("model: {}", dir.display());
     #[cfg(feature = "onnx")]
     {
-        Ok(Box::new(onnx::OnnxCtcRecognizer::load(
-            std::path::Path::new(model),
-            device,
-        )?))
+        Ok(Box::new(onnx::OnnxCtcRecognizer::load(&dir, device)?))
     }
     #[cfg(not(feature = "onnx"))]
     {
-        let _ = device;
+        let _ = (device, dir);
         anyhow::bail!("built without the `onnx` feature; rebuild with --features cuda (or onnx)")
     }
 }

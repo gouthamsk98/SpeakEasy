@@ -241,6 +241,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "asr-features",
+ "libloading 0.8.9",
  "log",
  "ort",
  "serde",

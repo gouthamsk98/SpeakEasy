@@ -32,5 +32,17 @@ that stay accurate with small chunks and little lookahead.**
   through a virtual device, and timestamps the waveform onset against the frame in which
   the text appears. That gives true end-to-end numbers, not just compute.
 
-Known measurement: the first CUDA call costs about 100 ms, so every model is warmed up
-when it loads.
+## Measurements (RTX 4060 Laptop, Pop!_OS 22.04)
+
+| Model | Device | Per-call compute | Audio per call | RTF |
+|---|---|---|---|---|
+| toy (contract test) | CUDA | 0.08 ms | 80 ms | 0.001 |
+| NeMo FastConformer CTC 80 ms (114M params, fp32) | CPU (2 threads) | 36 ms | 160 ms | 0.23 |
+| same | CUDA | 10 ms | 160 ms | 0.06 |
+
+Not profiled yet. Likely causes of the FastConformer's 10 ms on CUDA: per-kernel launch overhead across 17 conformer
+layers, and host↔device copies of about 2.5 MB of cache per call. If confirmed, that points to
+**CUDA graphs and IoBinding** (cache stays on the GPU) as the next GPU wins. FP16 or
+TensorRT come after that.
+
+Warm-up: the first CUDA call costs 100–350 ms, so every model is warmed up when it loads.

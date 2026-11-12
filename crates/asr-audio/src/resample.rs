@@ -54,7 +54,9 @@ impl StreamingResampler {
             out.push(self.hist[i] * (1.0 - f) + self.hist[i + 1] * f);
             self.pos += self.step;
         }
-        let consumed = self.pos as usize;
+        // pos may overshoot the buffer (next output needs samples not yet received):
+        // drop only what we have, keep the remainder in `pos`.
+        let consumed = (self.pos as usize).min(self.hist.len());
         self.hist.drain(..consumed);
         self.pos -= consumed as f64;
     }
@@ -92,6 +94,30 @@ mod tests {
             r.process(&[0.1; 480], &mut out); // 100 x 10 ms
         }
         assert!((out.len() as i64 - 16_000).abs() <= 2, "{}", out.len());
+    }
+
+    #[test]
+    fn odd_block_sizes_48k_and_44k1() {
+        for (rate, blocks) in [
+            (48_000u32, [161usize, 7, 1023, 1, 480]),
+            (44_100, [441, 13, 2, 999, 100]),
+        ] {
+            let mut r = StreamingResampler::new(rate, 16_000);
+            let mut out = Vec::new();
+            let mut fed = 0;
+            for _ in 0..200 {
+                for &n in &blocks {
+                    r.process(&vec![0.1; n], &mut out);
+                    fed += n;
+                }
+            }
+            let expect = fed as f64 * 16_000.0 / rate as f64;
+            assert!(
+                (out.len() as f64 - expect).abs() <= 3.0,
+                "{rate}: {} vs {expect}",
+                out.len()
+            );
+        }
     }
 
     #[test]

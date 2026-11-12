@@ -23,6 +23,7 @@ asr-prepare = "asr_research.prepare_manifest:main"
 asr-train = "asr_research.train:main"
 asr-eval = "asr_research.evaluate:main"
 asr-export = "asr_research.export_onnx:main"
+asr-import-nemo = "asr_research.import_sherpa_nemo:main"
 
 [build-system]
 requires = ["setuptools>=68"]

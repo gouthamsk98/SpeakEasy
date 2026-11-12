@@ -62,8 +62,32 @@ pip install -e '.[dev]'                               # torch, onnx, onnxruntime
 pytest
 ```
 
-The CUDA execution provider also needs **cuDNN 9 for CUDA 12**. If it is not installed
-system-wide, `pip install nvidia-cudnn-cu12` and add its `lib/` folder to `LD_LIBRARY_PATH`.
+The CUDA provider also needs **cuDNN 9**. `fetch-onnxruntime.sh` downloads it into
+`third_party/cudnn/lib`, and the app preloads it from there, so you don't need to set
+`LD_LIBRARY_PATH`.
+
+### Demo: real-time recognition of normal English speech
+
+Before we have glossectomy data, use a strong pretrained streaming model to check the whole
+real-time path: NVIDIA's NeMo FastConformer (CTC, cache-aware streaming, 80 ms lookahead,
+CC-BY-4.0), as exported by sherpa-onnx.
+
+```bash
+scripts/fetch-onnxruntime.sh                 # once: ORT + cuDNN
+scripts/fetch-demo-model.sh                  # ~430 MB; writes model.json via the importer
+cargo run --release -p asr-app --features cuda -- cuda             # speak into the mic
+cargo run --release -p asr-cli --features cuda -- --device cuda file \
+    models/sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-80ms/test_wavs/1.wav
+```
+
+With no model argument, the first model in `models/` is used. Paths resolve from the
+project folder, so the binaries work from any directory. Arguments for the app:
+`speak-easy [MODEL_DIR|auto|dummy] [auto|cpu|cuda|tensorrt|directml]`.
+
+Measured on an RTX 4060 Laptop GPU: all three bundled test clips are transcribed
+word-for-word. Each 160 ms step takes about 10 ms on CUDA (RTF 0.06) and about 36 ms on CPU
+(RTF 0.23). This architecture is also the planned **base model for fine-tuning on
+glossectomy speech**.
 
 ### Train → export → run
 
