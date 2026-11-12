@@ -1,0 +1,26 @@
+# Baseline: causal LSTM + CTC, characters. Small, exactly streamable, fast on any GPU/CPU.
+# It is a *pipeline-proving* baseline. Real accuracy will come from fine-tuning a pretrained
+# streaming model (see docs/ROADMAP.md) — but every model must honour the same export contract.
+name: baseline-ctc-lstm
+data:
+  train: ../data/manifests/train.jsonl
+  valid: ../data/manifests/valid.jsonl
+  max_seconds: 20.0
+tokens: ../data/manifests/tokens.txt   # built by asr-prepare
+model:
+  d_model: 320
+  num_layers: 3
+  subsample: 2          # frame stacking; 10 ms -> 20 ms per output frame
+  dropout: 0.15
+stream:
+  chunk_frames: 8       # 80 ms of audio per inference call; tune for latency vs. overhead
+train:
+  epochs: 60
+  batch_size: 16
+  lr: 1.0e-3
+  weight_decay: 1.0e-2
+  grad_clip: 5.0
+  amp: true
+  specaugment: {freq_masks: 2, freq_width: 15, time_masks: 4, time_width: 25}
+  speed_perturb: [0.9, 1.0, 1.1]
+out_dir: runs/baseline

@@ -1,0 +1,13 @@
+[package]
+name = "asr-audio"
+description = "Low-latency microphone capture -> 16 kHz mono f32, via a lock-free ring buffer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cpal.workspace = true
+rtrb.workspace = true
+anyhow.workspace = true
+log.workspace = true
+hound.workspace = true

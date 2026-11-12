@@ -1,0 +1,25 @@
+[package]
+name = "asr-cli"
+description = "Headless tools: transcribe WAV files, live mic in terminal, latency benchmarks."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "asr"
+path = "src/main.rs"
+
+[features]
+default = []
+onnx = ["asr-engine/onnx"]
+cuda = ["asr-engine/cuda"]
+tensorrt = ["asr-engine/tensorrt"]
+directml = ["asr-engine/directml"]
+
+[dependencies]
+asr-audio.workspace = true
+asr-engine.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+clap = { version = "4", features = ["derive"] }

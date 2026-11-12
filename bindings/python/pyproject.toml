@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "asr-native"
+dynamic = ["version"]
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+dependencies = ["numpy"]
+
+[tool.maturin]
+module-name = "asr_native"
+features = ["pyo3/extension-module"]

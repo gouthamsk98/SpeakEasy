@@ -1,0 +1,26 @@
+[package]
+name = "asr-app"
+description = "Desktop app: live captions of the user's speech, as fast as the hardware allows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "speak-easy"
+path = "src/main.rs"
+
+[features]
+default = []
+onnx = ["asr-engine/onnx"]
+cuda = ["asr-engine/cuda"]
+tensorrt = ["asr-engine/tensorrt"]
+directml = ["asr-engine/directml"]
+
+[dependencies]
+asr-audio.workspace = true
+asr-engine.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+crossbeam-channel.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }

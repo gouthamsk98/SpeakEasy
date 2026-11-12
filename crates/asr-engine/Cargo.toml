@@ -1,0 +1,24 @@
+[package]
+name = "asr-engine"
+description = "Streaming recognizer runtime: features -> model -> text, with GPU execution providers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# ONNX Runtime backend (downloads prebuilt ORT at build time).
+onnx = ["dep:ort", "dep:serde", "dep:serde_json"]
+# GPU execution providers. Linux/Windows NVIDIA:
+cuda = ["onnx", "ort/cuda"]
+tensorrt = ["onnx", "ort/tensorrt", "cuda"]
+# Windows, any DX12 GPU (NVIDIA / AMD / Intel):
+directml = ["onnx", "ort/directml"]
+
+[dependencies]
+asr-features.workspace = true
+anyhow.workspace = true
+log.workspace = true
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "api-24"] }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/asr-audio",
+    "crates/asr-features",
+    "crates/asr-engine",
+    "crates/asr-app",
+    "crates/asr-cli",
+    "bindings/python",
+]
+default-members = [
+    "crates/asr-audio",
+    "crates/asr-features",
+    "crates/asr-engine",
+    "crates/asr-app",
+    "crates/asr-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/gouthamsk98/SpeakEasy"
+rust-version = "1.80"
+
+[workspace.dependencies]
+asr-audio = { path = "crates/asr-audio" }
+asr-features = { path = "crates/asr-features" }
+asr-engine = { path = "crates/asr-engine" }
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+rustfft = "6.4"
+rtrb = "0.4"
+cpal = "0.18"
+hound = "3.5"
+crossbeam-channel = "0.5"
+
+# Latency is the product: optimise hard in release, keep dev builds usable.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev.package."*"]
+opt-level = 2   # deps (FFT, ORT glue, egui) fast even in debug builds
+
+[profile.profiling]
+inherits = "release"
+debug = true

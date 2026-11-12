@@ -1,0 +1,11 @@
+[package]
+name = "asr-features"
+description = "Streaming log-mel filterbank features. Single source of truth for training AND inference."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustfft.workspace = true
+
+[dev-dependencies]

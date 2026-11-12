@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+research/runs/
+research/wandb/
+research/lightning_logs/
+
+# ---- NEVER COMMIT PATIENT DATA OR WEIGHTS TRAINED ON IT ----
+# Speech of glossectomy patients is health data. See DATA_ETHICS.md.
+/data/*
+!/data/README.md
+/models/*
+!/models/README.md
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.onnx
+*.pt
+*.ckpt
+*.safetensors
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+/third_party/
