@@ -44,8 +44,7 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=True)
     for name, part in (("valid", rows[:n_valid]), ("train", rows[n_valid:])):
         with open(args.out / f"{name}.jsonl", "a", encoding="utf-8") as f:
-            for r in part:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in part)
 
     # Rebuild tokens over everything seen so far.
     texts = [json.loads(line)["text"] for p in ("train", "valid")

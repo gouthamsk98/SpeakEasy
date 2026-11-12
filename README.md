@@ -89,7 +89,24 @@ word-for-word. Each 160 ms step takes about 10 ms on CUDA (RTF 0.06) and about 3
 (RTF 0.23). This architecture is also the planned **base model for fine-tuning on
 glossectomy speech**.
 
-### Train → export → run
+### Personal model: record → export → fine-tune → import
+
+The main workflow. The user records sentences in the app and exports a dataset zip. The
+trainer fine-tunes the streaming FastConformer on it and sends back a model package, which
+the user imports. Full guide: [docs/PERSONAL_MODEL_WORKFLOW.md](docs/PERSONAL_MODEL_WORKFLOW.md).
+
+```bash
+# trainer, once:
+cd research && python3 -m venv .venv && source .venv/bin/activate
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install -e '.[dev,train]'
+# per dataset received:
+asr-dataset-import ~/Downloads/speakeasy-dataset-user01-<date>.zip
+asr-finetune ../data/datasets/user01 --out runs/user01-v1
+asr-export-nemo runs/user01-v1/model.nemo --name user01-v1   # -> runs/packages/speakeasy-model-user01-v1.zip
+```
+
+### From-scratch baseline (experimental)
 
 ```bash
 cd research
@@ -122,6 +139,7 @@ work comes next. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 * [Architecture & key decisions](docs/ARCHITECTURE.md)
 * [Latency budget: what "instant" can and can't mean](docs/LATENCY.md)
+* [Personal model workflow: user ⇄ trainer](docs/PERSONAL_MODEL_WORKFLOW.md)
 * [Model contract: what the runtime expects from an exported model](docs/MODEL_CONTRACT.md)
 * [Roadmap & research directions](docs/ROADMAP.md)
 * [Data ethics & consent](DATA_ETHICS.md): read before touching any recording

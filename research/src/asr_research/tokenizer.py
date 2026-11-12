@@ -15,12 +15,12 @@ class CharTokenizer:
         self.index = {t: i for i, t in enumerate(vocab)}
 
     @classmethod
-    def build(cls, texts: list[str]) -> "CharTokenizer":
+    def build(cls, texts: list[str]) -> CharTokenizer:
         chars = sorted({c for t in texts for c in normalize(t)} - {" "})
         return cls([BLANK, SPACE, *chars])
 
     @classmethod
-    def load(cls, path: str | Path) -> "CharTokenizer":
+    def load(cls, path: str | Path) -> CharTokenizer:
         return cls(Path(path).read_text(encoding="utf-8").splitlines())
 
     def save(self, path: str | Path) -> None:

@@ -33,6 +33,37 @@ enum Cmd {
         #[arg(long)]
         input: Option<String>,
     },
+    /// Score a model on a manifest (JSONL with "audio" and "text"), streaming exactly
+    /// like the app. Prints per-utterance and overall word/character error rates.
+    Eval {
+        manifest: PathBuf,
+        /// Feed audio in blocks of this many samples, like the live app (160 = 10 ms).
+        /// 0 = whole file at once.
+        #[arg(long, default_value_t = 160)]
+        block: usize,
+        /// Also write per-utterance results as JSON here
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
+    /// Export a speaker's recordings as a dataset zip (what the app's button does)
+    DatasetExport {
+        #[arg(long)]
+        speaker: String,
+        /// Output zip (default: Downloads folder)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Add existing recordings (a manifest JSONL with "audio" + "text") to a speaker's data,
+    /// scored by the model exactly like app recordings. Needs the speaker's consent on file.
+    DatasetAdd {
+        #[arg(long)]
+        speaker: String,
+        manifest: PathBuf,
+    },
+    /// Install a model package zip (what the app's "Import model" does)
+    ModelImport { zip: PathBuf },
+    /// List installed models and where data is stored
+    Models,
     /// Stream a WAV file through the pipeline as if it were live, report latency
     File {
         wav: PathBuf,
@@ -70,6 +101,153 @@ fn main() -> Result<()> {
                     print_events(&mut ev);
                 }
                 std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        Cmd::Eval {
+            manifest,
+            json,
+            block,
+        } => {
+            let mut p = Pipeline::new(
+                load_recognizer(&cli.model, cli.device)?,
+                EndpointConfig::default(),
+            );
+            p.set_endpointing(false); // like an app take: one utterance per file
+            let base = manifest.parent().unwrap_or(std::path::Path::new("."));
+            let (mut we, mut wn, mut ce, mut cn) = (0, 0, 0, 0);
+            let mut rows = Vec::new();
+            for line in std::fs::read_to_string(&manifest)?
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+            {
+                let r: serde_json::Value = serde_json::from_str(line)?;
+                let (Some(audio), Some(text)) = (r["audio"].as_str(), r["text"].as_str()) else {
+                    anyhow::bail!("manifest rows need \"audio\" and \"text\"");
+                };
+                let path = base.join(audio);
+                let wav = asr_audio::read_wav_16k(&path)?;
+                let mut ev = Vec::new();
+                for b in wav.chunks(if block == 0 { wav.len().max(1) } else { block }) {
+                    p.push_audio(b, &mut ev)?;
+                }
+                p.flush(&mut ev)?;
+                let hyp: Vec<String> = ev
+                    .into_iter()
+                    .filter_map(|e| {
+                        if let Event::Final(t) = e {
+                            Some(t)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let hyp = hyp.join(" ");
+                let s = asr_calibration::score(text, &hyp);
+                println!("{:5.1}%  {}\n        heard: {}", s.wer() * 100.0, text, hyp);
+                (we, wn, ce, cn) = (
+                    we + s.word_errors,
+                    wn + s.ref_words,
+                    ce + s.char_errors,
+                    cn + s.ref_chars,
+                );
+                rows.push(serde_json::json!({"audio": audio, "text": text, "heard": hyp, "wer": s.wer(), "cer": s.cer()}));
+            }
+            let (wer, cer) = (we as f64 / wn.max(1) as f64, ce as f64 / cn.max(1) as f64);
+            println!(
+                "\n{}: {} utterances | WER {:.2}% | CER {:.2}%",
+                p.recognizer_name(),
+                rows.len(),
+                wer * 100.0,
+                cer * 100.0
+            );
+            if let Some(j) = json {
+                std::fs::write(
+                    j,
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "model": p.recognizer_name(), "wer": wer, "cer": cer, "utterances": rows
+                    }))?,
+                )?;
+            }
+        }
+        Cmd::DatasetExport { speaker, out } => {
+            let out = out.unwrap_or_else(|| {
+                dirs::download_dir()
+                    .unwrap_or_else(asr_engine::app_home)
+                    .join(asr_calibration::package::dataset_file_name(&speaker))
+            });
+            let r =
+                asr_calibration::package::export_dataset(&asr_engine::data_root(), &speaker, &out)?;
+            println!(
+                "{} utterances, {:.1} min -> {}",
+                r.utterances,
+                r.total_seconds / 60.0,
+                r.path.display()
+            );
+        }
+        Cmd::DatasetAdd { speaker, manifest } => {
+            let root = asr_engine::data_root();
+            let consent = asr_calibration::Consent::load(&root, &speaker).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no consent on file for {speaker:?}: record consent in the app first"
+                )
+            })?;
+            let mut p = Pipeline::new(
+                load_recognizer(&cli.model, cli.device)?,
+                EndpointConfig::default(),
+            );
+            p.set_endpointing(false); // like an app take: one utterance per file
+            let mut w = asr_calibration::SessionWriter::new(
+                &root,
+                &consent,
+                &p.recognizer_name(),
+                "imported",
+            )?;
+            let base = manifest.parent().unwrap_or(std::path::Path::new("."));
+            let mut n = 0;
+            for line in std::fs::read_to_string(&manifest)?
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+            {
+                let r: serde_json::Value = serde_json::from_str(line)?;
+                let (Some(audio), Some(text)) = (r["audio"].as_str(), r["text"].as_str()) else {
+                    anyhow::bail!("manifest rows need \"audio\" and \"text\"");
+                };
+                let wav = asr_audio::read_wav_16k(&base.join(audio))?;
+                let mut ev = Vec::new();
+                p.push_audio(&wav, &mut ev)?;
+                p.flush(&mut ev)?;
+                let hyp: Vec<String> = ev
+                    .into_iter()
+                    .filter_map(|e| {
+                        if let Event::Final(t) = e {
+                            Some(t)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let hyp = hyp.join(" ");
+                w.add_take(n, text, &wav, &hyp, asr_calibration::score(text, &hyp))?;
+                n += 1;
+            }
+            let s = w.summary();
+            println!(
+                "added {n} recordings to {} (WER {:.1}%)",
+                w.dir.display(),
+                s.wer() * 100.0
+            );
+        }
+        Cmd::ModelImport { zip } => {
+            let dir = asr_engine::install_models_dir();
+            std::fs::create_dir_all(&dir)?;
+            let d = asr_calibration::package::import_model(&zip, &dir)?;
+            println!("installed {}", d.display());
+        }
+        Cmd::Models => {
+            println!("data:   {}", asr_engine::data_root().display());
+            println!("models: {}", asr_engine::install_models_dir().display());
+            for m in asr_engine::list_models() {
+                println!("  {}", m.display());
             }
         }
         Cmd::File { wav, realtime } => {

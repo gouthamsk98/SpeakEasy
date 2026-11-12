@@ -206,6 +206,24 @@ fn preload_cudnn() {
     });
 }
 
+/// ONNX Runtime allows one environment per process; every session (model switches, CPU
+/// fallback) must share it.
+fn shared_env() -> Result<ort::environment::Environment> {
+    static ENV: std::sync::Mutex<Option<ort::environment::Environment>> =
+        std::sync::Mutex::new(None);
+    let mut g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = g.as_ref() {
+        return Ok(e.clone());
+    }
+    // Telemetry off: this app processes medical speech; nothing leaves the machine.
+    let env = ort_builder()?
+        .with_name("asr")
+        .with_telemetry(false)
+        .build()?;
+    *g = Some(env.clone());
+    Ok(env)
+}
+
 fn ort_builder() -> Result<ort::environment::EnvironmentBuilder> {
     #[cfg(feature = "cuda")]
     preload_cudnn();
@@ -255,11 +273,7 @@ fn build_session(path: &Path, device: Device) -> Result<(Session, &'static str)>
         .into_iter()
         .map(|(e, _)| if strict { e.error_on_failure() } else { e })
         .collect();
-    // Telemetry off: this app processes medical speech; nothing leaves the machine.
-    let env = ort_builder()?
-        .with_name("asr")
-        .with_telemetry(false)
-        .build()?;
+    let env = shared_env()?;
     let session = Session::builder(&env)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
         .map_err(ort::Error::<()>::from)?
@@ -275,6 +289,18 @@ fn build_session(path: &Path, device: Device) -> Result<(Session, &'static str)>
 
 impl OnnxCtcRecognizer {
     pub fn load(dir: &Path, device: Device) -> Result<Self> {
+        match Self::load_on(dir, device) {
+            // Auto must work on any machine: if the GPU path fails (no NVIDIA GPU, driver
+            // missing, out of memory...), run on the CPU instead of refusing to start.
+            Err(e) if device == Device::Auto => {
+                log::warn!("GPU unavailable ({e:#}); falling back to CPU");
+                Self::load_on(dir, Device::Cpu)
+            }
+            r => r,
+        }
+    }
+
+    fn load_on(dir: &Path, device: Device) -> Result<Self> {
         let meta: ModelMeta = serde_json::from_reader(
             std::fs::File::open(dir.join("model.json")).context("open model.json")?,
         )?;
@@ -502,6 +528,13 @@ impl Recognizer for OnnxCtcRecognizer {
     fn finalize(&mut self) -> Result<String> {
         let text = self.text();
         self.reset();
+        Ok(text)
+    }
+
+    fn commit(&mut self) -> Result<String> {
+        // Keep states and last_token: the stream continues, only the text line ends.
+        let text = self.text();
+        self.tokens.clear();
         Ok(text)
     }
 

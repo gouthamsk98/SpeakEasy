@@ -35,7 +35,7 @@ def main(argv=None):
     tokens = [vocab[i] for i in range(len(vocab))]
     blank = tokens.index("<blk>")
 
-    i = lambda k: int(md[k])  # noqa: E731
+    i = lambda k: int(md[k])
     meta = {
         "format_version": 1,
         "name": a.model_dir.name,

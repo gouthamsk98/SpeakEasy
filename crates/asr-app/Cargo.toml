@@ -19,8 +19,11 @@ directml = ["asr-engine/directml"]
 [dependencies]
 asr-audio.workspace = true
 asr-engine.workspace = true
+asr-calibration.workspace = true
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 crossbeam-channel.workspace = true
+rfd = "0.18"
+dirs = "6"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }

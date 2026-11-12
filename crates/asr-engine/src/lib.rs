@@ -38,6 +38,13 @@ pub trait Recognizer: Send {
     /// End of utterance: flush and return the final text. Must leave the
     /// recognizer ready for a new utterance.
     fn finalize(&mut self) -> Result<String>;
+    /// Sentence break inside a continuous stream: return the text so far and start a new
+    /// line, but KEEP the model's streaming state. Streaming models emit words with a
+    /// delay; resetting here would drop words still in flight (and quiet speech can
+    /// trigger a break mid-sentence).
+    fn commit(&mut self) -> Result<String> {
+        self.finalize()
+    }
     fn reset(&mut self);
 }
 
@@ -91,6 +98,9 @@ pub struct Pipeline {
     chunk: usize,
     shift: usize,
     in_utterance: bool,
+    endpointing: bool,
+    /// Chunks left before a detected sentence break is committed (see COMMIT_DELAY_CHUNKS).
+    commit_in: Option<usize>,
     pub metrics: Metrics,
 }
 
@@ -112,11 +122,22 @@ impl Pipeline {
             chunk,
             shift,
             in_utterance: false,
+            endpointing: true,
+            commit_in: None,
             metrics: Metrics {
                 chunk_audio: Duration::from_secs_f64(hop * shift as f64),
                 ..Default::default()
             },
             rec,
+        }
+    }
+
+    /// Turn automatic sentence breaks on/off. Off while recording a calibration take: the
+    /// user marks start and end, and the take must be decoded as one piece.
+    pub fn set_endpointing(&mut self, on: bool) {
+        self.endpointing = on;
+        if !on {
+            self.commit_in = None;
         }
     }
 
@@ -138,6 +159,10 @@ impl Pipeline {
             }
         }
 
+        if end_of_utt && self.endpointing && self.commit_in.is_none() {
+            self.commit_in = Some(COMMIT_DELAY_CHUNKS);
+        }
+
         let window = self.chunk * self.n_mels;
         let step = self.shift * self.n_mels;
         while self.feats.len() >= window {
@@ -148,14 +173,18 @@ impl Pipeline {
             if let Some(text) = out {
                 events.push(Event::Partial(text));
             }
-        }
-
-        if end_of_utt {
-            let text = self.rec.finalize()?;
-            if !text.trim().is_empty() {
-                events.push(Event::Final(text));
+            match self.commit_in {
+                Some(0) | Some(1) => {
+                    self.commit_in = None;
+                    let text = self.rec.commit()?;
+                    if !text.trim().is_empty() {
+                        events.push(Event::Final(text));
+                    }
+                    self.in_utterance = false;
+                }
+                Some(n) => self.commit_in = Some(n - 1),
+                None => {}
             }
-            self.in_utterance = false;
         }
         Ok(())
     }
@@ -175,6 +204,7 @@ impl Pipeline {
                 self.feats.drain(..step);
             }
         }
+        self.commit_in = None;
         let text = self.rec.finalize()?;
         if !text.trim().is_empty() {
             events.push(Event::Final(text));
@@ -185,6 +215,11 @@ impl Pipeline {
         Ok(())
     }
 }
+
+/// After a pause is detected, decode this many more chunks before ending the line, so
+/// words the model is still emitting (streaming models emit with a short delay) land on
+/// the right line instead of being split across two.
+pub const COMMIT_DELAY_CHUNKS: usize = 2;
 
 /// Which compute device to run the model on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -231,18 +266,56 @@ pub fn resolve_path(p: impl AsRef<std::path::Path>) -> Option<std::path::PathBuf
         .find(|c| c.exists())
 }
 
-/// Installed models: directories under `models/` that contain a `model.json`.
+/// Per-user app folder: `$SPEAKEASY_HOME`, else `~/.local/share/SpeakEasy` (Linux) /
+/// `%APPDATA%\SpeakEasy` (Windows).
+pub fn app_home() -> std::path::PathBuf {
+    if let Some(h) = std::env::var_os("SPEAKEASY_HOME") {
+        return h.into();
+    }
+    dirs::data_dir()
+        .unwrap_or_else(|| ".".into())
+        .join("SpeakEasy")
+}
+
+/// Where recordings and consent live: the repo's `data/` during development,
+/// otherwise `<app_home>/data`.
+pub fn data_root() -> std::path::PathBuf {
+    resolve_path("data/README.md")
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| app_home().join("data"))
+}
+
+/// Where imported models are installed: the repo's `models/` during development,
+/// otherwise `<app_home>/models`.
+pub fn install_models_dir() -> std::path::PathBuf {
+    resolve_path("models/README.md")
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| app_home().join("models"))
+}
+
+/// Installed models: directories containing a `model.json` under the install dir, any
+/// `models/` folder next to the program, and `<app_home>/models`.
 pub fn list_models() -> Vec<std::path::PathBuf> {
-    let Some(root) = resolve_path("models") else {
-        return Vec::new();
-    };
-    let mut v: Vec<_> = std::fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("model.json").is_file())
-        .collect();
+    let mut roots = vec![install_models_dir(), app_home().join("models")];
+    roots.extend(resolve_path("models"));
+    let mut v: Vec<std::path::PathBuf> = Vec::new();
+    for root in roots {
+        for p in std::fs::read_dir(&root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+        {
+            let canon = p.canonicalize().unwrap_or(p.clone());
+            if p.join("model.json").is_file()
+                && !v
+                    .iter()
+                    .any(|x| x.canonicalize().ok() == Some(canon.clone()))
+            {
+                v.push(p);
+            }
+        }
+    }
     v.sort();
     v
 }

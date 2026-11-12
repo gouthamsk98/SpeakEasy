@@ -34,3 +34,6 @@ Thumbs.db
 .idea/
 .vscode/
 /third_party/
+
+# training/export logs (may contain transcripts)
+research/*.log
