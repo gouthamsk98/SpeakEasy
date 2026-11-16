@@ -44,6 +44,9 @@ pub struct ManifestRow {
     /// Word / Phrase / Sentence / TongueTwister / Story (None for imported recordings).
     #[serde(default)]
     pub kind: Option<crate::Kind>,
+    /// How the user was asked to say it: Normal, Far, Close, PauseBefore, ...
+    #[serde(default)]
+    pub condition: crate::Condition,
 }
 
 pub struct ExportResult {
@@ -97,6 +100,7 @@ pub fn export_dataset(data_root: &Path, speaker: &str, out_zip: &Path) -> Result
                 wer: t.score.wer(),
                 model: s.model.clone(),
                 kind: crate::kind_of(&t.prompt),
+                condition: t.condition,
             };
             manifest.push_str(&serde_json::to_string(&row)?);
             manifest.push('\n');
@@ -243,6 +247,7 @@ mod tests {
             &[0.1; 8000],
             "hello",
             score("hello there", "hello"),
+            crate::Condition::Normal,
         )
         .unwrap();
         w.add_take(
@@ -251,6 +256,7 @@ mod tests {
             &[0.1; 16000],
             "good night",
             score("good night", "good night"),
+            crate::Condition::Far,
         )
         .unwrap();
         let out = root.join("out/ds.zip");

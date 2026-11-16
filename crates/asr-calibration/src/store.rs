@@ -7,7 +7,7 @@
 //! ```
 
 use crate::align::Score;
-use crate::prompts::{all_prompts, session_mix, Prompt};
+use crate::prompts::{all_prompts, session_mix, Condition, Kind, Prompt};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,9 @@ pub struct TakeResult {
     pub hypothesis: String,
     pub seconds: f32,
     pub score: Score,
+    /// How the user was asked to say it (older sessions: Normal).
+    #[serde(default)]
+    pub condition: Condition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +136,7 @@ impl SessionWriter {
         audio_16k: &[f32],
         hypothesis: &str,
         score: Score,
+        condition: Condition,
     ) -> Result<()> {
         let stem = format!("{:02}", index + 1);
         let wav = self.dir.join(format!("{stem}.wav"));
@@ -158,6 +162,7 @@ impl SessionWriter {
             hypothesis: hypothesis.into(),
             seconds: audio_16k.len() as f32 / 16_000.0,
             score,
+            condition,
         });
         s.takes.sort_by_key(|t| t.index);
         s.ref_words = s.takes.iter().map(|t| t.score.ref_words).sum();
@@ -215,9 +220,24 @@ pub fn recorded_counts(
     m
 }
 
+/// How many takes this speaker has recorded under each condition.
+pub fn condition_counts(
+    data_root: &Path,
+    speaker: &str,
+) -> std::collections::HashMap<Condition, usize> {
+    let mut m = std::collections::HashMap::new();
+    for (_, s) in sessions(data_root, speaker) {
+        for t in s.takes {
+            *m.entry(t.condition).or_insert(0) += 1;
+        }
+    }
+    m
+}
+
 /// Build the next session of `n` items: the [`session_mix`] of kinds, and within each
 /// kind the items this speaker has recorded least (ties: list order, so stories continue
-/// where they stopped).
+/// where they stopped). About 2 in 5 of the short items get a recording [`Condition`],
+/// starting with the conditions recorded least.
 pub fn next_session(data_root: &Path, speaker: &str, n: usize) -> Vec<Prompt> {
     let counts = recorded_counts(data_root, speaker);
     let all = all_prompts();
@@ -232,7 +252,34 @@ pub fn next_session(data_root: &Path, speaker: &str, n: usize) -> Vec<Prompt> {
         pool.sort_by_key(|(c, i, _)| (*c, *i));
         out.extend(pool.into_iter().take(want).map(|(_, _, p)| p.clone()));
     }
+    assign_conditions(&mut out, &condition_counts(data_root, speaker));
     out
+}
+
+fn assign_conditions(prompts: &mut [Prompt], done: &std::collections::HashMap<Condition, usize>) {
+    let mut rotation = Condition::SPECIAL.to_vec();
+    // stable sort: least-recorded first, ties in SPECIAL order
+    rotation.sort_by_key(|c| done.get(c).copied().unwrap_or(0));
+    let mut next = 0;
+    let mut short = 0;
+    for p in prompts.iter_mut() {
+        // long reading stays normal: it is tiring enough already
+        if matches!(p.kind, Kind::Paragraph | Kind::Story) {
+            continue;
+        }
+        short += 1;
+        if short % 5 != 2 && short % 5 != 4 {
+            continue;
+        }
+        for _ in 0..rotation.len() {
+            let c = rotation[next % rotation.len()];
+            next += 1;
+            if c.fits(p) {
+                p.condition = c;
+                break;
+            }
+        }
+    }
 }
 
 /// The baseline = the speaker's first session with the same prompt set.
@@ -250,7 +297,6 @@ pub fn baseline(
 mod tests {
     use super::*;
     use crate::align::score;
-    use crate::prompts::Kind;
 
     #[test]
     fn session_roundtrip_and_baseline() {
@@ -271,6 +317,7 @@ mod tests {
             &audio,
             "thank you",
             score("thank you", "thank you"),
+            Condition::Normal,
         )
         .unwrap();
         w.add_take(
@@ -279,6 +326,7 @@ mod tests {
             &audio,
             "tall my daughter",
             score("call my daughter", "tall my daughter"),
+            Condition::Far,
         )
         .unwrap();
         assert!(w.dir.join("01.wav").exists() && w.dir.join("02.txt").exists());
@@ -310,20 +358,41 @@ mod tests {
         // record the story part and the first word -> next session moves on
         let c = Consent::record(&root, "s").unwrap();
         let mut w = SessionWriter::new(&root, &c, "m", "set").unwrap();
-        w.add_take(0, &story1.text, &[0.0; 100], "", score(&story1.text, ""))
-            .unwrap();
+        w.add_take(
+            0,
+            &story1.text,
+            &[0.0; 100],
+            "",
+            score(&story1.text, ""),
+            Condition::Normal,
+        )
+        .unwrap();
         w.add_take(
             1,
             &first[0].text,
             &[0.0; 100],
             "",
             score(&first[0].text, ""),
+            Condition::Far,
         )
         .unwrap();
         let next = next_session(&root, "s", 12);
         let story2 = next.iter().find(|p| p.kind == Kind::Story).unwrap();
         assert!(story2.context.as_deref().unwrap().contains("part 2 of"));
         assert!(!next.iter().any(|p| p.text == first[0].text));
+        // conditions: some, not all; Far was just recorded so another one comes first
+        let conds: Vec<_> = next.iter().map(|p| p.condition).collect();
+        let special = conds.iter().filter(|c| **c != Condition::Normal).count();
+        assert!((3..=6).contains(&special), "{conds:?}");
+        assert_ne!(
+            conds.iter().find(|c| **c != Condition::Normal),
+            Some(&Condition::Far)
+        );
+        assert!(next
+            .iter()
+            .filter(|p| matches!(p.kind, Kind::Paragraph | Kind::Story))
+            .all(|p| p.condition == Condition::Normal));
+        assert!(next.iter().all(|p| p.condition.fits(p)));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -20,8 +20,19 @@ USER (app)                                     TRAINER (this repo, NVIDIA GPU)
 ## User side (app)
 
 - **Calibration** tab → enter a Speaker ID, tick consent once, **Start recording**.
-- Each session shows the sentences recorded least so far (108 sentences: everyday phrases,
-  long tongue-twister sentences, numbers and longer sentences).
+- Each session (default 20 items, up to 50) mixes single words, word lists (short words
+  with a pause after each), short phrases and minimal pairs, sentences, tongue twisters,
+  a reading passage and a part of a story, taking the items recorded least so far.
+- About 2 in 5 short items come with a **recording condition**:
+  - close to the microphone, or about 1 m away;
+  - a long silence first (the screen counts down 4 s), or a pause in the middle;
+  - slowly or quickly;
+  - quietly or loudly;
+  - head turned away.
+
+  The condition is saved with each take and in the dataset manifest (`condition`).
+- The setup screen shows coverage per kind and per condition, and a progress bar towards
+  30 minutes of recordings: roughly where fine-tuning starts paying off reliably.
 - Space = record/stop, Enter = save & next, **Record again** if you said something different.
   **Wrong recognitions are fine and useful:** the take is saved with the *correct* sentence.
 - **Export dataset** writes one zip to Downloads with all recordings, a manifest, the consent

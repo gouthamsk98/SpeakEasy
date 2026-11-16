@@ -227,7 +227,14 @@ fn main() -> Result<()> {
                     })
                     .collect();
                 let hyp = hyp.join(" ");
-                w.add_take(n, text, &wav, &hyp, asr_calibration::score(text, &hyp))?;
+                w.add_take(
+                    n,
+                    text,
+                    &wav,
+                    &hyp,
+                    asr_calibration::score(text, &hyp),
+                    asr_calibration::Condition::Normal,
+                )?;
                 n += 1;
             }
             let s = w.summary();

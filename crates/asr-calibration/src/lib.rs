@@ -14,5 +14,5 @@ pub mod prompts;
 pub mod store;
 
 pub use align::{score, Op, Score};
-pub use prompts::{all_prompts, kind_of, Kind, Prompt};
+pub use prompts::{all_prompts, kind_of, Condition, Kind, Prompt};
 pub use store::{Consent, SessionSummary, SessionWriter, TakeResult};

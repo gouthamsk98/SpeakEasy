@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Calibration / recording tab.
 //!
-//! The user reads sentences shown on screen. Each take is scored against the sentence
+//! The user reads items shown on screen (words, word lists, phrases, sentences, tongue
+//! twisters, reading passages, story parts), some under a recording condition (far from
+//! the microphone, a long silence first, quietly, ...). Each take is scored against the text
 //! (so they see how well the current model understands them) and saved as
 //! audio + correct text: the training data for their personal model.
 //!
-//! Flow: Setup (speaker + consent) -> one sentence at a time (record / result / next)
+//! Flow: Setup (speaker + consent) -> one item at a time (record / result / next)
 //!       -> Summary. "Export dataset" packs every recording into a zip for the trainer.
 
 use crate::Cmd;
 use asr_calibration::{
     all_prompts, package, score,
     store::{self, valid_speaker_id, CONSENT_STATEMENT},
-    Consent, Kind, Op, Prompt, Score, SessionWriter,
+    Condition, Consent, Kind, Op, Prompt, Score, SessionWriter,
 };
 use asr_engine::Event;
 use crossbeam_channel::Sender;
@@ -23,6 +25,13 @@ use std::time::Instant;
 const GREEN: Color32 = Color32::from_rgb(60, 180, 90);
 const RED: Color32 = Color32::from_rgb(225, 80, 80);
 const ORANGE: Color32 = Color32::from_rgb(230, 150, 40);
+const BLUE: Color32 = Color32::from_rgb(70, 140, 230);
+
+/// Minutes of recordings to aim for: about where personal fine-tuning starts to pay off
+/// reliably.
+const GOAL_MINUTES: f32 = 30.0;
+/// Bump when the prompt set changes (sessions are compared within a set).
+const PROMPT_SET: &str = "en-v3";
 
 enum Stage {
     Setup,
@@ -46,6 +55,8 @@ pub struct Calibration {
     prompts: Vec<Prompt>,
     idx: usize,
     recording: Option<Instant>,
+    /// For Condition::PauseBefore: the screen says "stay quiet" until this moment.
+    quiet_until: Option<Instant>,
     waiting_result: bool,
     live_finals: Vec<String>,
     live_partial: String,
@@ -61,12 +72,13 @@ impl Calibration {
             data_root,
             stage: Stage::Setup,
             speaker: "user01".into(),
-            n_prompts: 12,
+            n_prompts: 20,
             consent_ticked: false,
             consent: None,
             prompts: Vec::new(),
             idx: 0,
             recording: None,
+            quiet_until: None,
             waiting_result: false,
             live_finals: Vec::new(),
             live_partial: String::new(),
@@ -110,12 +122,19 @@ impl Calibration {
         self.take = None;
         self.live_finals.clear();
         self.live_partial.clear();
-        self.recording = Some(Instant::now());
+        let now = Instant::now();
+        self.recording = Some(now);
+        let quiet = self
+            .prompts
+            .get(self.idx)
+            .map_or(0.0, |p| p.condition.quiet_before_secs());
+        self.quiet_until = (quiet > 0.0).then(|| now + std::time::Duration::from_secs_f32(quiet));
         let _ = cmd.send(Cmd::StartTake);
     }
 
     fn stop_recording(&mut self, cmd: &Sender<Cmd>) {
         self.recording = None;
+        self.quiet_until = None;
         self.waiting_result = true;
         let _ = cmd.send(Cmd::StopTake);
     }
@@ -129,16 +148,18 @@ impl Calibration {
                     &self.data_root,
                     consent,
                     model,
-                    "en-v2",
+                    PROMPT_SET,
                 )?);
             }
             let w = self.writer.as_mut().unwrap();
+            let p = &self.prompts[self.idx];
             w.add_take(
                 self.idx,
-                &self.prompts[self.idx].text,
+                &p.text,
                 &take.audio,
                 &take.text,
                 take.score,
+                p.condition,
             )
         })();
         if let Err(e) = res {
@@ -232,9 +253,13 @@ impl Calibration {
     fn ui_setup(&mut self, ui: &mut egui::Ui, model: Option<&str>) {
         ui.heading("Record your voice");
         ui.label(
-            "Read the sentences shown on screen. You'll see what the app understood, word by \
-             word. Every recording is saved on this computer with the correct sentence, so a \
-             personal model can be trained on your voice.",
+            "Read what is shown on screen: words, short phrases, sentences, tongue twisters \
+             and short stories. Some items ask you to say them in a special way (far from \
+             the microphone, after a long silence, quietly...), because in real life you \
+             don't always sit still in a quiet room. You'll see what the app understood, word \
+             by word. Every recording is saved on this computer with the correct text, so a \
+             personal model can be trained on your voice. The more you record, the better it \
+             gets.",
         );
         ui.add_space(8.0);
         egui::Grid::new("setup")
@@ -245,8 +270,8 @@ impl Calibration {
                 ui.text_edit_singleline(&mut self.speaker);
                 ui.end_row();
                 ui.label("Items this session");
-                ui.add(egui::Slider::new(&mut self.n_prompts, 5..=30))
-                    .on_hover_text("Each session mixes single words, short phrases, sentences, a tongue twister and a part of a story.");
+                ui.add(egui::Slider::new(&mut self.n_prompts, 5..=50))
+                    .on_hover_text("Each session mixes single words, word lists, short phrases, sentences, tongue twisters, a reading passage and a part of a story. About 20 items take 10 minutes.");
                 ui.end_row();
             });
         let valid = valid_speaker_id(&self.speaker);
@@ -282,6 +307,7 @@ impl Calibration {
                 secs / 60.0,
                 sessions.len(),
             ));
+            goal_bar(ui, secs);
             // Coverage per kind: how much of each list this speaker has read at least once.
             let counts = store::recorded_counts(&self.data_root, &self.speaker);
             let all = all_prompts();
@@ -297,6 +323,12 @@ impl Calibration {
                 })
                 .collect();
             ui.label(RichText::new(format!("Covered: {}", parts.join("  ·  "))).weak());
+            let cc = store::condition_counts(&self.data_root, &self.speaker);
+            let conds: Vec<String> = Condition::SPECIAL
+                .iter()
+                .map(|c| format!("{} {}", c.short(), cc.get(c).copied().unwrap_or(0)))
+                .collect();
+            ui.label(RichText::new(format!("Special recordings: {}", conds.join("  ·  "))).weak());
         }
         ui.add_space(12.0);
         let ready = valid && model.is_some() && (existing.is_some() || self.consent_ticked);
@@ -325,7 +357,7 @@ impl Calibration {
     fn ui_prompt(&mut self, ui: &mut egui::Ui, cmd: &Sender<Cmd>, model: &str, font: f32) {
         let n = self.prompts.len();
         ui.horizontal(|ui| {
-            ui.label(format!("Sentence {} of {n}", self.idx + 1));
+            ui.label(format!("Item {} of {n}", self.idx + 1));
             ui.add(egui::ProgressBar::new(self.idx as f32 / n as f32).desired_width(200.0));
             if ui.small_button("End session").clicked() {
                 if self.recording.is_some() {
@@ -335,21 +367,40 @@ impl Calibration {
             }
         });
         ui.add_space(12.0);
-        let prompt = &self.prompts[self.idx];
+        let prompt = self.prompts[self.idx].clone();
         let heading = match &prompt.context {
             Some(c) => format!("{}: {c}. Please read aloud:", prompt.kind.label()),
             None => format!("{}. Please read aloud:", prompt.kind.label()),
         };
         ui.label(RichText::new(heading).weak());
+        if let Some(h) = prompt.kind.hint() {
+            ui.label(RichText::new(h).weak().italics());
+        }
+        if prompt.condition != Condition::Normal {
+            condition_banner(ui, prompt.condition);
+        }
         // Short items big, long passages smaller so they fit on screen.
         let size = match prompt.kind {
             Kind::Word => font * 1.4,
             Kind::Phrase => font * 1.2,
             Kind::Sentence => font,
+            Kind::WordList => font * 0.9,
             Kind::TongueTwister => font * 0.8,
-            Kind::Story => (font * 0.6).max(18.0),
+            Kind::Paragraph | Kind::Story => (font * 0.6).max(18.0),
         };
-        ui.label(RichText::new(&prompt.text).size(size).strong());
+        if prompt.condition == Condition::PauseInside {
+            let (a, b) = prompt.pause_split();
+            ui.label(RichText::new(a).size(size).strong());
+            ui.label(
+                RichText::new("( pause here: count to three silently )")
+                    .size((size * 0.6).max(14.0))
+                    .color(BLUE)
+                    .italics(),
+            );
+            ui.label(RichText::new(b).size(size).strong());
+        } else {
+            ui.label(RichText::new(&prompt.text).size(size).strong());
+        }
         ui.add_space(16.0);
 
         let (space, enter) = ui.ctx().input(|i| {
@@ -360,6 +411,17 @@ impl Calibration {
         });
 
         if let Some(t0) = self.recording {
+            if let Some(until) = self.quiet_until {
+                let left = until
+                    .saturating_duration_since(Instant::now())
+                    .as_secs_f32();
+                let (txt, col) = if left > 0.0 {
+                    (format!("Stay quiet...  {}", left.ceil() as u32), ORANGE)
+                } else {
+                    ("NOW SPEAK".to_string(), GREEN)
+                };
+                ui.label(RichText::new(txt).size(font * 1.2).color(col).strong());
+            }
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!("Recording {:.1}s", t0.elapsed().as_secs_f32()))
@@ -405,7 +467,7 @@ impl Calibration {
             legend(ui);
             ui.label(
                 RichText::new(
-                    "Mistakes are fine: the recording is saved with the correct sentence, \
+                    "Mistakes are fine: the recording is saved with the correct text, \
                      and that is exactly what the personal model learns from.",
                 )
                 .weak(),
@@ -449,7 +511,7 @@ impl Calibration {
             });
             ui.label(
                 RichText::new(
-                    "Press Record, read the sentence at your own pace, then press Stop. \
+                    "Press Record, read it at your own pace, then press Stop. \
                      If you said something different, use Record again.",
                 )
                 .weak(),
@@ -461,13 +523,13 @@ impl Calibration {
         ui.heading("Session results");
         match &self.writer {
             None => {
-                ui.label("No sentences were saved in this session.");
+                ui.label("Nothing was saved in this session.");
             }
             Some(w) => {
                 let s = w.summary();
                 ui.label(
                     RichText::new(format!(
-                        "This session: word error {:.0}%  ·  character error {:.0}%  ({} sentences, model {})",
+                        "This session: word error {:.0}%  ·  character error {:.0}%  ({} items, model {})",
                         s.wer() * 100.0,
                         s.cer() * 100.0,
                         s.takes.len(),
@@ -484,12 +546,20 @@ impl Calibration {
                             .num_columns(3)
                             .spacing([16.0, 6.0])
                             .show(ui, |ui| {
-                                ui.strong("Sentence");
+                                ui.strong("Item");
                                 ui.strong("Heard");
                                 ui.strong("Word error");
                                 ui.end_row();
                                 for t in &s.takes {
-                                    ui.label(&t.prompt);
+                                    if t.condition == Condition::Normal {
+                                        ui.label(&t.prompt);
+                                    } else {
+                                        ui.label(format!(
+                                            "{}  [{}]",
+                                            t.prompt,
+                                            t.condition.short()
+                                        ));
+                                    }
                                     word_diff(ui, &t.score, 14.0);
                                     ui.label(format!("{:.0}%", t.score.wer() * 100.0));
                                     ui.end_row();
@@ -497,6 +567,12 @@ impl Calibration {
                             });
                     });
                 ui.label(RichText::new(format!("Saved to {}", w.dir.display())).weak());
+                let total: f32 = store::sessions(&self.data_root, &self.speaker)
+                    .iter()
+                    .flat_map(|(_, s)| s.takes.iter().map(|t| t.seconds))
+                    .sum::<f32>()
+                    + 0.0;
+                goal_bar(ui, total);
             }
         }
         ui.add_space(8.0);
@@ -530,7 +606,7 @@ fn history(ui: &mut egui::Ui, data_root: &std::path::Path, speaker: &str) {
             .show(ui, |ui| {
                 ui.strong("When");
                 ui.strong("Model");
-                ui.strong("Sentences");
+                ui.strong("Items");
                 ui.strong("Word error");
                 ui.end_row();
                 for (_, s) in sessions.iter().rev() {
@@ -599,9 +675,42 @@ fn legend(ui: &mut egui::Ui) {
     });
 }
 
+/// Progress towards [`GOAL_MINUTES`] of recordings, with encouragement.
+fn goal_bar(ui: &mut egui::Ui, secs: f32) {
+    let min = secs / 60.0;
+    let frac = (min / GOAL_MINUTES).min(1.0);
+    ui.add(
+        egui::ProgressBar::new(frac)
+            .desired_width(320.0)
+            .text(format!("{min:.1} of {GOAL_MINUTES:.0} minutes")),
+    );
+    let msg = if min >= GOAL_MINUTES {
+        "Goal reached: great work! More recordings still help, especially special ones."
+    } else if min >= GOAL_MINUTES / 2.0 {
+        "Over halfway. Each session now makes your model noticeably better."
+    } else {
+        "Your personal model improves most with more recordings: aim for a session or two a day."
+    };
+    ui.label(RichText::new(msg).weak());
+}
+
+fn condition_banner(ui: &mut egui::Ui, c: Condition) {
+    egui::Frame::group(ui.style())
+        .fill(BLUE.gamma_multiply(0.18))
+        .stroke(egui::Stroke::new(1.5, BLUE))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(c.label()).size(20.0).strong().color(BLUE));
+            ui.label(RichText::new(c.instruction()).size(17.0));
+        });
+    ui.add_space(6.0);
+}
+
 fn plural(k: Kind) -> &'static str {
     match k {
         Kind::Word => "words",
+        Kind::WordList => "word lists",
+        Kind::Paragraph => "reading passages",
         Kind::Phrase => "phrases",
         Kind::Sentence => "sentences",
         Kind::TongueTwister => "tongue twisters",

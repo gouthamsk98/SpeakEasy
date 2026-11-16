@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! What the user is asked to read. All text is written for this project (GPL with the code).
 //!
-//! Five kinds, mixed in every session (see [`session_mix`]):
-//! * **Words**: single everyday words (needs, days, numbers, family).
+//! Seven kinds, mixed in every session (see [`session_mix`]):
+//! * **Words**: single everyday words (needs, days, numbers, family, short one-syllable words).
+//! * **Word lists**: rows of short words grouped by sound, read with a pause after each:
+//!   many short words per take, with silence in between.
 //! * **Phrases**: 2-3 word phrases, plus minimal pairs (*sip, ship*) that differ only in a
 //!   tongue sound, the sounds glossectomy affects most (t d n l s z sh ch j k g r th y).
 //! * **Sentences**: everyday sentences, numbers/places, tongue-heavy and longer sentences.
-//! * **Tongue twisters**: long sentences built from traditional rhymes; hard on purpose.
+//! * **Tongue twisters**: long sentences built from traditional rhymes, plus short ones;
+//!   hard on purpose.
+//! * **Reading passages**: short paragraphs made mostly of short everyday words.
 //! * **Story**: original short stories read a few sentences at a time, in order, continued
 //!   across sessions: long, natural, continuous speech.
 //!
 //! Within a kind, sessions take the items recorded least so far, in list order.
+//!
+//! Some items also get a recording [`Condition`] (close to / far from the microphone, a long
+//! silence first, a pause in the middle, slow, fast, quiet, loud, head turned away), so the
+//! personal model also learns the user's voice the way it sounds in real life.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,14 +29,19 @@ pub enum Kind {
     Sentence,
     TongueTwister,
     Story,
+    WordList,
+    Paragraph,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    /// In the order a session asks them: short warm-ups first, long reading last.
+    pub const ALL: [Kind; 7] = [
         Kind::Word,
+        Kind::WordList,
         Kind::Phrase,
         Kind::Sentence,
         Kind::TongueTwister,
+        Kind::Paragraph,
         Kind::Story,
     ];
 
@@ -39,6 +52,124 @@ impl Kind {
             Kind::Sentence => "Sentence",
             Kind::TongueTwister => "Tongue twister",
             Kind::Story => "Story",
+            Kind::WordList => "Word list",
+            Kind::Paragraph => "Reading passage",
+        }
+    }
+
+    /// Extra advice shown with every item of this kind.
+    pub fn hint(self) -> Option<&'static str> {
+        match self {
+            Kind::WordList => Some("Pause briefly after each word."),
+            Kind::TongueTwister => Some("Take it slowly; getting it exactly right doesn't matter."),
+            Kind::Paragraph | Kind::Story => {
+                Some("Read at your normal pace; pausing to breathe is fine.")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How to say an item. Real life is not a quiet room with the mouth 30 cm from the
+/// microphone; recording the same voice in different ways makes the model robust to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Condition {
+    #[default]
+    Normal,
+    Close,
+    Far,
+    PauseBefore,
+    PauseInside,
+    Slow,
+    Fast,
+    Soft,
+    Loud,
+    TurnAway,
+}
+
+impl Condition {
+    /// Every condition except Normal, in rotation order.
+    pub const SPECIAL: [Condition; 9] = [
+        Condition::Far,
+        Condition::PauseBefore,
+        Condition::Close,
+        Condition::Slow,
+        Condition::PauseInside,
+        Condition::Soft,
+        Condition::TurnAway,
+        Condition::Fast,
+        Condition::Loud,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Condition::Normal => "Normal",
+            Condition::Close => "Close to the microphone",
+            Condition::Far => "Far from the microphone",
+            Condition::PauseBefore => "Long silence first",
+            Condition::PauseInside => "Pause in the middle",
+            Condition::Slow => "Slowly",
+            Condition::Fast => "Quickly",
+            Condition::Soft => "Quietly",
+            Condition::Loud => "Loudly",
+            Condition::TurnAway => "Head turned away",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Condition::Normal => "normal",
+            Condition::Close => "close",
+            Condition::Far => "far",
+            Condition::PauseBefore => "silence first",
+            Condition::PauseInside => "pause inside",
+            Condition::Slow => "slow",
+            Condition::Fast => "fast",
+            Condition::Soft => "quiet",
+            Condition::Loud => "loud",
+            Condition::TurnAway => "turned away",
+        }
+    }
+
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Condition::Normal => "",
+            Condition::Close => {
+                "Lean in close: your mouth about a hand's width (10 cm) from the microphone."
+            }
+            Condition::Far => {
+                "Sit back: about an arm's length (1 metre) from the microphone. Speak normally."
+            }
+            Condition::PauseBefore => {
+                "Press Record, then stay quiet until the screen says NOW SPEAK."
+            }
+            Condition::PauseInside => {
+                "Stop at the pause mark for a slow count of three, then carry on."
+            }
+            Condition::Slow => "Say it slowly and clearly, as if to someone hard of hearing.",
+            Condition::Fast => "Say it a bit faster than usual, as if you are in a hurry.",
+            Condition::Soft => "Say it quietly, as if someone nearby is asleep.",
+            Condition::Loud => "Say it loudly, as if calling to someone in the next room.",
+            Condition::TurnAway => "Turn your head to one side, away from the screen, and say it.",
+        }
+    }
+
+    /// Seconds of silence the screen asks for before speaking.
+    pub fn quiet_before_secs(self) -> f32 {
+        if self == Condition::PauseBefore {
+            4.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Whether this condition makes sense for `p`.
+    pub fn fits(self, p: &Prompt) -> bool {
+        match self {
+            Condition::PauseInside => {
+                p.kind != Kind::WordList && p.text.split_whitespace().count() >= 4
+            }
+            _ => true,
         }
     }
 }
@@ -49,6 +180,25 @@ pub struct Prompt {
     pub text: String,
     /// e.g. "The Lighthouse Cat, part 3 of 8"
     pub context: Option<String>,
+    pub condition: Condition,
+}
+
+impl Prompt {
+    /// For [`Condition::PauseInside`]: the text split where the pause goes (after a comma
+    /// near the middle if there is one, else in the middle).
+    pub fn pause_split(&self) -> (String, String) {
+        let w: Vec<&str> = self.text.split_whitespace().collect();
+        if w.len() < 2 {
+            return (self.text.clone(), String::new());
+        }
+        let mid = w.len() / 2;
+        let at = (1..w.len())
+            .filter(|&i| w[i - 1].ends_with(',') || w[i - 1].ends_with(';'))
+            .min_by_key(|&i| i.abs_diff(mid))
+            .filter(|&i| i.abs_diff(mid) <= w.len() / 4)
+            .unwrap_or(mid);
+        (w[..at].join(" "), w[at..].join(" "))
+    }
 }
 
 pub const WORDS: &[&str] = &[
@@ -124,6 +274,84 @@ pub const WORDS: &[&str] = &[
     "mother",
     "father",
     "friend",
+    // short one-syllable words
+    "cat",
+    "dog",
+    "sun",
+    "bed",
+    "cup",
+    "map",
+    "pen",
+    "box",
+    "hat",
+    "bus",
+    "car",
+    "key",
+    "shoe",
+    "sock",
+    "bag",
+    "book",
+    "door",
+    "chair",
+    "fish",
+    "egg",
+    "rice",
+    "bread",
+    "soup",
+    "fork",
+    "spoon",
+    "knife",
+    "plate",
+    "bowl",
+    "sink",
+    "soap",
+    "towel",
+    "comb",
+    "rain",
+    "snow",
+    "wind",
+    "tree",
+    "leaf",
+    "bird",
+    "ship",
+    "sea",
+    "sand",
+    "rock",
+    "road",
+    "shop",
+    "bank",
+    "park",
+    "train",
+    "light",
+    "dark",
+    "red",
+    "blue",
+    "green",
+    "white",
+    "black",
+    "big",
+    "small",
+    "fast",
+    "left",
+    "right",
+    "up",
+    "down",
+    "open",
+    "close",
+    "push",
+    "pull",
+    "sit",
+    "stand",
+    "walk",
+    "run",
+    "eat",
+    "drink",
+    "read",
+    "write",
+    "sing",
+    "think",
+    "laugh",
+    "cry",
 ];
 
 pub const PHRASES: &[&str] = &[
@@ -302,7 +530,129 @@ pub const TWISTERS: &[&str] = &[
     "Chester the cheetah chewed a chunk of cheap cheddar cheese and chose to share it with the children.",
     "Lily ladled little Letty's lentil soup, then let it cool a little on the long wooden table.",
     "Daddy draws doors and drives down to the dock, where the dark green boats are tied together.",
-    "Can you can a can as a canner can can a can, or do you need a bigger can to can it?",
+    "Can you can a can as a canner can can a can, or do you need a bigger can to can it?",    // short ones
+    "Red leather, yellow leather.",
+    "Toy boat, toy boat, toy boat.",
+    "Six sick sheep sat by the shed.",
+    "Fresh fried fish, fish fresh fried.",
+    "A big black bug bit a big black bear.",
+    "Greek grapes, Greek grapes, Greek grapes.",
+    "Truly rural, truly rural.",
+    "Silly Sally swiftly shooed seven silly sheep.",
+    "Two tiny tigers take two taxis to town.",
+    "Clean clams crammed in clean cans.",
+    "Tim took tea to Tom at ten.",
+    "Dan's dog dug deep down by the dock.",
+    "Lucky lizards like lemon lollies.",
+    "Chuck checks cheap cheese chips.",
+    "Shy Shelly says she shall sew sheets.",
+    "Nine nice night nurses nursing nicely.",
+    "Kate can't catch Kim's kite.",
+    "Thin sticks, thick bricks.",
+    "Lilly's little lamb licked a lemon.",
+    "Good blood, bad blood, good blood, bad blood.",
+];
+
+/// Rows of short words grouped by sound; read with a pause after each word.
+pub const WORD_LISTS: &[&str] = &[
+    "cat, cap, cot, cut, coat, cake, cow",
+    "tap, top, tip, tub, ten, tin, toe",
+    "dad, dog, dip, door, duck, dish, dot",
+    "sun, sit, sock, sand, seal, soup, sky",
+    "shoe, shop, ship, shell, sheep, shut, shy",
+    "chin, chip, chop, chair, cheek, chalk, chew",
+    "jam, jar, jet, job, jug, joke, June",
+    "lip, lap, log, lid, leg, lamp, lake",
+    "red, run, rug, rat, ring, rope, rose",
+    "no, nut, net, nap, nose, nine, neck",
+    "go, gap, gum, gate, goat, gold, game",
+    "thin, thick, thumb, three, thorn, thief, thud",
+    "this, that, these, those, then, them, there",
+    "yes, yell, yard, yawn, year, yolk, young",
+    "zip, zoo, zero, zone, buzz, fizz, maze",
+    "bat, bed, bin, bus, bag, ball, bone",
+    "pin, pen, pan, pot, pig, pie, pear",
+    "fan, fin, fog, fox, feet, fire, fork",
+    "van, vet, vest, vine, voice, view, vote",
+    "win, wet, web, wig, wall, wave, wood",
+    "mat, mop, mud, mix, moon, milk, mouse",
+    "hat, hen, hill, hop, hug, home, hand",
+    "kick, kite, king, kettle, kiss, keep, kid",
+    "one, two, three, four, five, six, seven, eight, nine, ten",
+    "eleven, twelve, fifteen, eighteen, thirty, forty, fifty, sixty",
+    "Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday",
+    "January, February, March, April, May, June",
+    "July, August, September, October, November, December",
+    "tea, key, sea, knee, bee, pea, tree",
+    "light, right, white, kite, night, bite, sight",
+];
+
+/// Short reading passages made mostly of short everyday words: (title, text).
+pub const PARAGRAPHS: &[(&str, &str)] = &[
+    (
+        "My Dog Sam",
+        "I have a small brown dog. His name is Sam. Each day we walk to the park and back. Sam likes to run on the grass and chase the red ball. When it rains, he sits by the door and looks at me. Then I get his coat, and we go out in the wet. He is my best friend.",
+    ),
+    (
+        "The Shop on the Hill",
+        "On Monday I went to the shop on the hill. I got milk, bread, eggs and a bag of rice. The man at the till was kind and slow. He asked if I was well, and I said yes. It was cold, so I took the bus home and made a cup of hot tea.",
+    ),
+    (
+        "Rain in the Night",
+        "The rain came down all night. It beat on the roof and ran down the glass. In the dark I lay in bed and could not sleep. At six the rain stopped and the sun came up. The birds began to sing, the air was fresh, and the road shone like a long wet mirror.",
+    ),
+    (
+        "A Day at the Sea",
+        "We took the train to the sea. The sand was hot, and the sky was a deep blue. The kids dug a big hole and made a fort with a flag on top. Dad fell asleep in his chair. At five we ate fish and chips, then went for a last swim in the cool, calm sea.",
+    ),
+    (
+        "The Old Clock",
+        "In the hall there is an old clock. It was made by my great grandfather, more than a hundred years ago. It ticks all day and all night, and it chimes each hour. When I was a child, I used to count the chimes in bed. Now my own son counts them too.",
+    ),
+    (
+        "Making Soup",
+        "To make soup, chop an onion, two carrots and a stick of celery. Fry them in a pot with a little oil. Add a tin of tomatoes, some water, salt and pepper. Let it boil, then turn the heat down. After half an hour, the soup is thick, warm and ready to eat.",
+    ),
+    (
+        "The Garden in Spring",
+        "In spring the garden wakes up. Green shoots push through the soil, and the trees grow new leaves. Bees buzz from rose to rose. I like to sit on the bench with a cup of tea and watch the birds build their nests. Each week there is something new to see.",
+    ),
+    (
+        "At the Doctor",
+        "Last week I saw the doctor. She asked me how I felt and if I had any pain. She checked my chest, my throat and my blood. Then she said that I was doing well and should keep up my exercises. I was glad, and I walked home in the sun.",
+    ),
+    (
+        "The Lost Key",
+        "This morning I could not find my key. I looked in my coat, my bag and under the bed. I checked the kitchen and the car. At last I sat down to think. Then I saw it, hanging in the door, just where I had left it the night before.",
+    ),
+    (
+        "My Town",
+        "My town is not big, but it has all I need. There is a market on Friday, a park with a pond, and a small cafe that sells the best cake. The streets are quiet at night. Most people know each other, and they always stop to say hello.",
+    ),
+    (
+        "Learning to Ride",
+        "When I was six, my father taught me to ride a bike. He held the seat and ran behind me down the lane. I said, don't let go, and he said, I won't. But he did, and I rode all the way to the gate by myself. I still remember how proud I felt.",
+    ),
+    (
+        "Winter Night",
+        "Snow fell softly on the roofs and the fields. Inside, the fire was warm and bright. We sat close together and told jokes and old tales. The cat lay on the rug and purred. Outside, the world was white and still, and the moon shone on the frozen pond.",
+    ),
+    (
+        "The Bus Ride",
+        "Every Tuesday I take the number nine bus to the city. I sit near the front, by the window. We pass the school, the church and the big green park. The driver knows my name and always says good morning. The ride takes twenty minutes, and I like to watch the people.",
+    ),
+    (
+        "A Letter",
+        "Dear Tom, thank you for your kind letter. I am feeling much better now, and I can walk to the end of the road and back. The doctors say I am making good progress. Please come and see us soon. We will have lunch in the garden if the weather is fine. With love, Ann.",
+    ),
+    (
+        "The Kite",
+        "On a windy day, Jack and his dad took a kite to the top of the hill. The kite was red and yellow, with a long blue tail. Jack held the string tight as it rose up into the sky. It dipped and spun, then flew high above the trees. Jack laughed and did not want to go home.",
+    ),
+    (
+        "Market Day",
+        "On Saturday the market fills the square. You can buy fruit, fish, fresh bread, pots and pans, and old books. The sellers shout their prices and the air smells of hot food. I go early, before the crowds, and I always buy a bag of sweet oranges and a bunch of flowers.",
+    ),
 ];
 
 pub struct Story {
@@ -360,6 +710,7 @@ pub fn all_prompts() -> Vec<Prompt> {
                 kind,
                 text: t.to_string(),
                 context: None,
+                condition: Condition::Normal,
             })
             .collect()
     };
@@ -367,12 +718,22 @@ pub fn all_prompts() -> Vec<Prompt> {
     v.extend(simple(Kind::Phrase, PHRASES));
     v.extend(simple(Kind::Sentence, SENTENCES));
     v.extend(simple(Kind::TongueTwister, TWISTERS));
+    v.extend(simple(Kind::WordList, WORD_LISTS));
+    for (i, (title, text)) in PARAGRAPHS.iter().enumerate() {
+        v.push(Prompt {
+            kind: Kind::Paragraph,
+            text: text.to_string(),
+            context: Some(format!("{title} ({} of {})", i + 1, PARAGRAPHS.len())),
+            condition: Condition::Normal,
+        });
+    }
     for s in STORIES {
         for (i, part) in s.parts.iter().enumerate() {
             v.push(Prompt {
                 kind: Kind::Story,
                 text: part.to_string(),
                 context: Some(format!("{}, part {} of {}", s.title, i + 1, s.parts.len())),
+                condition: Condition::Normal,
             });
         }
     }
@@ -388,27 +749,33 @@ pub fn kind_of(text: &str) -> Option<Kind> {
         .map(|p| p.kind)
 }
 
-/// How many items of each kind a session of `n` items contains. Order = the order they
-/// are asked in: short warm-up words first, the story last.
+/// How many items of each kind a session of `n` items contains, in the order they are
+/// asked: short warm-up words first, long reading last.
 pub fn session_mix(n: usize) -> Vec<(Kind, usize)> {
     let n = n.max(1);
-    let story = if n >= 20 {
-        2
-    } else if n >= 5 {
-        1
-    } else {
-        0
+    let step = |levels: &[(usize, usize)]| {
+        levels
+            .iter()
+            .filter(|(min_n, _)| n >= *min_n)
+            .map(|x| x.1)
+            .next_back()
+            .unwrap_or(0)
     };
-    let twister = if n >= 8 { (n / 10).max(1) } else { 0 };
-    let rest = n - story - twister;
+    let story = step(&[(5, 1), (30, 2)]);
+    let paragraph = step(&[(10, 1), (30, 2), (45, 3)]);
+    let word_list = step(&[(7, 1), (20, 2), (35, 3)]);
+    let twister = if n >= 8 { (n / 8).max(1) } else { 0 };
+    let rest = n - story - paragraph - word_list - twister;
     let words = (rest * 35 + 50) / 100;
     let phrases = (rest * 25 + 50) / 100;
     let sentences = rest - words - phrases;
     vec![
         (Kind::Word, words),
+        (Kind::WordList, word_list),
         (Kind::Phrase, phrases),
         (Kind::Sentence, sentences),
         (Kind::TongueTwister, twister),
+        (Kind::Paragraph, paragraph),
         (Kind::Story, story),
     ]
 }
@@ -419,7 +786,7 @@ mod tests {
 
     #[test]
     fn mix_adds_up_and_covers_all_kinds() {
-        for n in 1..=40 {
+        for n in 1..=60 {
             assert_eq!(
                 session_mix(n).iter().map(|x| x.1).sum::<usize>(),
                 n,
@@ -440,5 +807,29 @@ mod tests {
         assert_eq!(kind_of("sip, ship"), Some(Kind::Phrase));
         assert_eq!(kind_of("water"), Some(Kind::Word));
         assert!(all.iter().filter(|p| p.kind == Kind::Story).count() >= 24);
+        assert_eq!(
+            kind_of("Red leather, yellow leather."),
+            Some(Kind::TongueTwister)
+        );
+        assert!(all.iter().filter(|p| p.kind == Kind::Paragraph).count() >= 12);
+        assert!(all.iter().filter(|p| p.kind == Kind::WordList).count() >= 20);
+    }
+
+    #[test]
+    fn pause_split_prefers_a_comma_near_the_middle() {
+        let p = |t: &str| Prompt {
+            kind: Kind::Sentence,
+            text: t.into(),
+            context: None,
+            condition: Condition::PauseInside,
+        };
+        let (a, b) =
+            p("If you are going to the shop, please get some bread and butter.").pause_split();
+        assert_eq!(a, "If you are going to the shop,");
+        assert_eq!(b, "please get some bread and butter.");
+        let (a, b) = p("Can I have some more water please?").pause_split();
+        assert_eq!(format!("{a} {b}"), "Can I have some more water please?");
+        assert!(!a.is_empty() && !b.is_empty());
+        assert!(!Condition::PauseInside.fits(&p("Thank you.")));
     }
 }

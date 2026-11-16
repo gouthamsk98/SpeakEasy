@@ -179,7 +179,10 @@ fn remember_model(model: &str) {
 fn remembered_model() -> Option<String> {
     let m = std::fs::read_to_string(last_model_file()).ok()?;
     let m = m.trim().to_string();
-    std::path::Path::new(&m).join("model.json").is_file().then_some(m)
+    std::path::Path::new(&m)
+        .join("model.json")
+        .is_file()
+        .then_some(m)
 }
 
 impl App {
